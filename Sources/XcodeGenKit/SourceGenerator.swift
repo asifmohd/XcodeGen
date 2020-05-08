@@ -77,14 +77,26 @@ class SourceGenerator {
         localPackageGroup!.children.append(fileReference)
     }
 
-    func getAllSourceFiles(targetType: PBXProductType, sources: [TargetSource]) throws -> [SourceFile] {
-        try sources.flatMap { try getSourceFiles(targetType: targetType, targetSource: $0, path: project.basePath + $0.path) }
+    func getAllSourceFiles(targetType: PBXProductType, sources: [TargetSource], completion: @escaping (([SourceFile]) -> Void)) throws {
+        var flattenedSources: [SourceFile] = []
+        let group = DispatchGroup()
+        try sources.forEach { (source) in
+            group.enter()
+            try getSourceFiles(targetType: targetType, targetSource: source, path: project.basePath + source.path) {
+                flattenedSources.append(contentsOf: $0)
+                group.leave()
+            }
+        }
+        group.wait()
+        completion(flattenedSources)
     }
 
     // get groups without build files. Use for Project.fileGroups
-    func getFileGroups(path: String) throws {
+    func getFileGroups(path: String, completion: @escaping (() -> ())) throws {
         let fullPath = project.basePath + path
-        _ = try getSourceFiles(targetType: .none, targetSource: TargetSource(path: path), path: fullPath)
+        _ = try getSourceFiles(targetType: .none, targetSource: TargetSource(path: path), path: fullPath) { _ in
+            completion()
+        }
     }
 
     func getFileType(path: Path) -> FileType? {
@@ -341,25 +353,24 @@ class SourceGenerator {
     }
 
     /// Collects all the excluded paths within the targetSource
-    private func getSourceMatches(targetSource: TargetSource, patterns: [String]) -> Set<Path> {
+    private func getSourceMatches(targetSource: TargetSource, patterns: [String], completion: @escaping ((Set<Path>) -> Void)) {
         let rootSourcePath = project.basePath + targetSource.path
 
-        return Set(
-            patterns.map { pattern in
-                guard !pattern.isEmpty else { return [] }
-                return Glob(pattern: "\(rootSourcePath)/\(pattern)")
-                    .map { Path($0) }
-                    .map {
-                        guard $0.isDirectory else {
-                            return [$0]
-                        }
-
-                        return (try? $0.recursiveChildren()) ?? []
+        let nonEmptyPatterns = patterns.filter({ !$0.isEmpty })
+        let listOfPaths: [Path] = nonEmptyPatterns.map { pattern in
+            Glob(pattern: "\(rootSourcePath)/\(pattern)")
+                .map { Path($0) }
+                .map {
+                    guard $0.isDirectory else {
+                        return [$0]
                     }
-                    .reduce([], +)
-            }
-            .reduce([], +)
-        )
+                    return (try? $0.recursiveChildren()) ?? []
+                }
+                .reduce([], +)
+        }
+        .reduce([], +)
+        let resultSet = Set(listOfPaths)
+        completion(resultSet)
     }
 
     /// Checks whether the path is not in any default or TargetSource excludes
@@ -551,12 +562,26 @@ class SourceGenerator {
     }
 
     /// creates source files
-    private func getSourceFiles(targetType: PBXProductType, targetSource: TargetSource, path: Path) throws -> [SourceFile] {
+    private func getSourceFiles(targetType: PBXProductType, targetSource: TargetSource, path: Path, completion: ((([SourceFile]) -> ()))) throws {
+
+        var excludePaths: Set<Path> = Set()
+        var includePaths: Set<Path> = Set()
+        let group = DispatchGroup()
 
         // generate excluded paths
-        let excludePaths = getSourceMatches(targetSource: targetSource, patterns: targetSource.excludes)
+        group.enter()
+        getSourceMatches(targetSource: targetSource, patterns: targetSource.excludes) {
+            excludePaths = $0
+            group.leave()
+        }
         // generate included paths. Excluded paths will override this.
-        let includePaths = getSourceMatches(targetSource: targetSource, patterns: targetSource.includes)
+        group.enter()
+        getSourceMatches(targetSource: targetSource, patterns: targetSource.includes) {
+            includePaths = $0
+            group.leave()
+        }
+
+        group.wait()
 
         let type = targetSource.type ?? (path.isFile || path.extension != nil ? .file : .group)
 
@@ -623,7 +648,8 @@ class SourceGenerator {
         case .group:
             if targetSource.optional && !Path(targetSource.path).exists {
                 // This group is missing, so if's optional just return an empty array
-                return []
+                completion([])
+                return
             }
 
             let (groupSourceFiles, groups) = try getGroupSources(
@@ -652,7 +678,7 @@ class SourceGenerator {
             createIntermediaGroups(for: sourceReference, at: sourcePath)
         }
 
-        return sourceFiles
+        completion(sourceFiles)
     }
 
     private func createParentGroups(_ parentGroups: [String], for fileElement: PBXFileElement) {
