@@ -13,11 +13,11 @@ struct SourceFile {
 
 class SourceGenerator {
 
-    var rootGroups: Set<PBXFileElement> = []
+    var rootGroups: Atomic<Set<PBXFileElement>> = Atomic(wrappedValue: [])
     private let projectDirectory: Path?
-    private var fileReferencesByPath: [String: PBXFileElement] = [:]
-    private var groupsByPath: [Path: PBXGroup] = [:]
-    private var variantGroupsByPath: [Path: PBXVariantGroup] = [:]
+    private var fileReferencesByPath: Atomic<[String: PBXFileElement]> = Atomic(wrappedValue: [:])
+    private var groupsByPath: Atomic<[Path: PBXGroup]> = Atomic<[Path: PBXGroup]>(wrappedValue: [:])
+    private var variantGroupsByPath: Atomic<[Path: PBXVariantGroup]> = Atomic<[Path: PBXVariantGroup]>(wrappedValue: [:])
     private var localPackageGroup: PBXGroup?
 
     private let project: Project
@@ -30,7 +30,7 @@ class SourceGenerator {
         "orig",
     ]
 
-    private(set) var knownRegions: Set<String> = []
+    private(set) var knownRegions: Atomic<Set<String>> = Atomic<Set<String>>(wrappedValue: [])
 
     init(project: Project, pbxProj: PBXProj, projectDirectory: Path?) {
         self.project = project
@@ -58,7 +58,9 @@ class SourceGenerator {
         if localPackageGroup == nil {
             let groupName = project.options.localPackagesGroup ?? "Packages"
             localPackageGroup = addObject(PBXGroup(sourceTree: .sourceRoot, name: groupName))
-            rootGroups.insert(localPackageGroup!)
+            rootGroups.mutate {
+                $0.insert(localPackageGroup!)
+            }
         }
 
         let absolutePath = project.basePath + path.normalize()
@@ -108,7 +110,7 @@ class SourceGenerator {
     }
 
     func generateSourceFile(targetType: PBXProductType, targetSource: TargetSource, path: Path, buildPhase: BuildPhaseSpec? = nil, fileReference: PBXFileElement? = nil) -> SourceFile {
-        let fileReference = fileReference ?? fileReferencesByPath[path.string.lowercased()]!
+        let fileReference = fileReference ?? fileReferencesByPath.wrappedValue[path.string.lowercased()]!
         var settings: [String: Any] = [:]
         let fileType = getFileType(path: path)
         var attributes: [String] = targetSource.attributes + (fileType?.attributes ?? [])
@@ -200,7 +202,7 @@ class SourceGenerator {
 
     func getFileReference(path: Path, inPath: Path, name: String? = nil, sourceTree: PBXSourceTree = .group, lastKnownFileType: String? = nil) -> PBXFileElement {
         let fileReferenceKey = path.string.lowercased()
-        if let fileReference = fileReferencesByPath[fileReferenceKey] {
+        if let fileReference = fileReferencesByPath.wrappedValue[fileReferenceKey] {
             return fileReference
         } else {
             let fileReferencePath = (try? path.relativePath(from: inPath)) ?? path
@@ -242,7 +244,9 @@ class SourceGenerator {
                     versionGroupType: "wrapper.xcdatamodel",
                     children: modelFileReferences
                 ))
-                fileReferencesByPath[fileReferenceKey] = versionGroup
+                fileReferencesByPath.mutate {
+                    $0[fileReferenceKey] = versionGroup
+                }
                 return versionGroup
             } else {
                 // For all extensions other than `xcdatamodeld`
@@ -254,7 +258,9 @@ class SourceGenerator {
                         path: fileReferencePath.string
                     )
                 )
-                fileReferencesByPath[fileReferenceKey] = fileReference
+                fileReferencesByPath.mutate {
+                    $0[fileReferenceKey] = fileReference
+                }
                 return fileReference
             }
         }
@@ -289,7 +295,7 @@ class SourceGenerator {
     private func getGroup(path: Path, name: String? = nil, mergingChildren children: [PBXFileElement], createIntermediateGroups: Bool, hasCustomParent: Bool, isBaseGroup: Bool) -> PBXGroup {
         let groupReference: PBXGroup
 
-        if let cachedGroup = groupsByPath[path] {
+        if let cachedGroup = groupsByPath.wrappedValue[path] {
             var cachedGroupChildren = cachedGroup.children
             for child in children {
                 // only add the children that aren't already in the cachedGroup
@@ -327,10 +333,10 @@ class SourceGenerator {
                 path: groupPath
             )
             groupReference = addObject(group)
-            groupsByPath[path] = groupReference
+            groupsByPath.wrappedValue[path] = groupReference
 
             if isTopLevelGroup {
-                rootGroups.insert(groupReference)
+                rootGroups.wrappedValue.insert(groupReference)
             }
         }
         return groupReference
@@ -339,7 +345,7 @@ class SourceGenerator {
     /// Creates a variant group or returns an existing one at the path
     private func getVariantGroup(path: Path, inPath: Path) -> PBXVariantGroup {
         let variantGroup: PBXVariantGroup
-        if let cachedGroup = variantGroupsByPath[path] {
+        if let cachedGroup = variantGroupsByPath.wrappedValue[path] {
             variantGroup = cachedGroup
         } else {
             let group = PBXVariantGroup(
@@ -347,7 +353,9 @@ class SourceGenerator {
                 name: path.lastComponent
             )
             variantGroup = addObject(group)
-            variantGroupsByPath[path] = variantGroup
+            variantGroupsByPath.mutate {
+                $0[path] = variantGroup
+            }
         }
         return variantGroup
     }
@@ -485,7 +493,9 @@ class SourceGenerator {
                 findLocalisedDirectory(by: NSLocale.canonicalLanguageIdentifier(from: project.options.developmentLanguage ?? "en"))
         }()
 
-        knownRegions.formUnion(localisedDirectories.map { $0.lastComponentWithoutExtension })
+        knownRegions.mutate({ (knownRegions) in
+            knownRegions.formUnion(localisedDirectories.map { $0.lastComponentWithoutExtension })
+        })
 
         // create variant groups of the base localisation first
         var baseLocalisationVariantGroups: [PBXVariantGroup] = []
@@ -605,7 +615,9 @@ class SourceGenerator {
             )
 
             if !(createIntermediateGroups || hasCustomParent) || path.parent() == project.basePath {
-                rootGroups.insert(fileReference)
+                rootGroups.mutate {
+                    $0.insert(fileReference)
+                }
             }
 
             let buildPhase: BuildPhaseSpec?
@@ -631,7 +643,9 @@ class SourceGenerator {
             } else if parentPath == project.basePath {
                 sourcePath = path
                 sourceReference = fileReference
-                rootGroups.insert(fileReference)
+                rootGroups.mutate {
+                    $0.insert(fileReference)
+                }
             } else {
                 let parentGroup = getGroup(
                     path: parentPath,
@@ -688,7 +702,7 @@ class SourceGenerator {
 
         let parentPath = project.basePath + Path(parentGroups.joined(separator: "/"))
         let parentPathExists = parentPath.exists
-        let parentGroupAlreadyExists = groupsByPath[parentPath] != nil
+        let parentGroupAlreadyExists = groupsByPath.wrappedValue[parentPath] != nil
 
         let parentGroup = getGroup(
             path: parentPath,
@@ -718,7 +732,7 @@ class SourceGenerator {
             return
         }
 
-        let hasParentGroup = groupsByPath[parentPath] != nil
+        let hasParentGroup = groupsByPath.wrappedValue[parentPath] != nil
         if !hasParentGroup {
             do {
                 // if the path is a parent of the project base path (or if calculating that fails)

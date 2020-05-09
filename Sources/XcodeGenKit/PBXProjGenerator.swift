@@ -17,14 +17,14 @@ public class PBXProjGenerator {
 
     var sourceGenerator: SourceGenerator!
 
-    var targetObjects: [String: PBXTarget] = [:]
+    var targetObjects: Atomic<[String: PBXTarget]> = Atomic<[String: PBXTarget]>(wrappedValue: [:])
     var targetAggregateObjects: [String: PBXAggregateTarget] = [:]
     var targetFileReferences: [String: PBXFileReference] = [:]
     var sdkFileReferences: [String: PBXFileReference] = [:]
     var packageReferences: [String: XCRemoteSwiftPackageReference] = [:]
 
     var carthageFrameworksByPlatform: [String: Set<PBXFileElement>] = [:]
-    var frameworkFiles: [PBXFileElement] = []
+    var frameworkFiles: Atomic<[PBXFileElement]> = Atomic<[PBXFileElement]>(wrappedValue: [])
     var bundleFiles: [PBXFileElement] = []
 
     var generated = false
@@ -145,7 +145,9 @@ public class PBXProjGenerator {
                 targetObject = PBXNativeTarget(name: target.name, buildPhases: [])
             }
 
-            targetObjects[target.name] = addObject(targetObject)
+            targetObjects.mutate {
+                $0[target.name] = addObject(targetObject)
+            }
 
             var explicitFileType: String?
             var lastKnownFileType: String?
@@ -319,13 +321,15 @@ public class PBXProjGenerator {
                     path: carthageResolver.buildPath
                 )
             )
-            frameworkFiles.append(carthageGroup)
+            frameworkFiles.mutate {
+                $0.append(carthageGroup)
+            }
         }
 
-        if !frameworkFiles.isEmpty {
+        if !frameworkFiles.wrappedValue.isEmpty {
             let group = addObject(
                 PBXGroup(
-                    children: frameworkFiles,
+                    children: frameworkFiles.wrappedValue,
                     sourceTree: .group,
                     name: "Frameworks"
                 )
@@ -344,7 +348,7 @@ public class PBXProjGenerator {
             derivedGroups.append(group)
         }
 
-        mainGroup.children = Array(sourceGenerator.rootGroups)
+        mainGroup.children = Array(sourceGenerator.rootGroups.wrappedValue)
         sortGroups(group: mainGroup)
         setupGroupOrdering(group: mainGroup)
         // add derived groups at the end
@@ -366,7 +370,7 @@ public class PBXProjGenerator {
             projectAttributes["knownAssetTags"] = assetTags
         }
 
-        var knownRegions = Set(sourceGenerator.knownRegions)
+        var knownRegions = Set(sourceGenerator.knownRegions.wrappedValue)
         knownRegions.insert(developmentRegion)
         if project.options.useBaseInternationalization {
             knownRegions.insert("Base")
@@ -375,7 +379,7 @@ public class PBXProjGenerator {
 
         pbxProject.packages = packageReferences.sorted { $0.key < $1.key }.map { $1 }
 
-        let allTargets: [PBXTarget] = targetObjects.valueArray + targetAggregateObjects.valueArray
+        let allTargets: [PBXTarget] = targetObjects.wrappedValue.valueArray + targetAggregateObjects.valueArray
         pbxProject.targets = allTargets
             .sorted { $0.name < $1.name }
         pbxProject.attributes = projectAttributes
@@ -420,8 +424,8 @@ public class PBXProjGenerator {
     }
 
     func generateTargetDependency(from: String, to target: String) -> PBXTargetDependency {
-        guard let targetObject = targetObjects[target] ?? targetAggregateObjects[target] else {
-            fatalError("Target dependency not found: from ( \(from) ) to ( \(target) )")
+        guard let targetObject = targetObjects.wrappedValue[target] ?? targetAggregateObjects[target] else {
+            fatalError("Target dependency not found: from  ( \(from) ) to ( \(target) )")
         }
 
         let targetProxy = addObject(
@@ -625,7 +629,7 @@ public class PBXProjGenerator {
         }
 
         for target in project.targets {
-            guard let pbxTarget = targetObjects[target.name] else {
+            guard let pbxTarget = targetObjects.wrappedValue[target.name] else {
                 continue
             }
             generateTargetAttributes(target, pbxTarget: pbxTarget)
@@ -861,8 +865,10 @@ public class PBXProjGenerator {
                     targetFrameworkBuildFiles.append(buildFile)
                 }
 
-                if !frameworkFiles.contains(fileReference) {
-                    frameworkFiles.append(fileReference)
+                if !frameworkFiles.wrappedValue.contains(fileReference) {
+                    frameworkFiles.mutate {
+                        $0.append(fileReference)
+                    }
                 }
 
                 if embed {
@@ -905,7 +911,9 @@ public class PBXProjGenerator {
                         )
                     )
                     sdkFileReferences[dependency.reference] = fileReference
-                    frameworkFiles.append(fileReference)
+                    frameworkFiles.mutate({
+                        $0.append(fileReference)
+                    })
                 }
 
                 let buildFile = addObject(
@@ -1360,7 +1368,7 @@ public class PBXProjGenerator {
             defaultConfigurationName: defaultConfigurationName
         ))
 
-        let targetObject = targetObjects[target.name]!
+        let targetObject = targetObjects.wrappedValue[target.name]!
 
         let targetFileReference = targetFileReferences[target.name]
 
